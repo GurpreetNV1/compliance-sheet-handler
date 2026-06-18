@@ -74,6 +74,7 @@ class Orchestrator:
 
 
 # Cleanup
+
     def _clean_storage_startup(self):
         storage_path = "storage"
 
