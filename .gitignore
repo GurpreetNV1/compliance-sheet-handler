@@ -4,3 +4,4 @@ logs
 sheets
 .env
 agentcis_state.json
+storage
