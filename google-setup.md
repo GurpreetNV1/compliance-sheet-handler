@@ -2,13 +2,20 @@
 
 This project currently reads mail through IMAP. If you want to move the mailbox layer to Google Cloud Console / Gmail API later, use this setup as the starting point.
 
+This document is for a **manual, on-demand run model**, not a live webhook service:
+
+- you run the script yourself
+- the script chooses either `last run` mode or a custom date/time window
+- no webhook is required
+- no always-on listener is required
+
 ## What To Create In Google Cloud
 
 1. Create or pick a Google Cloud project.
-2. Enable the **Gmail API** for that project.
-3. Configure the **OAuth consent screen**.
-4. Create an **OAuth client ID**.
-5. Use a **Desktop app** client if you are running this locally from Python.
+2. Enable the `Gmail API` for that project.
+3. Configure the `OAuth consent screen`.
+4. Create an `OAuth client ID`.
+5. Use a `Desktop app` client if you are running this locally from Python.
 
 ## Recommended OAuth Scopes
 
@@ -71,12 +78,11 @@ The Gmail API is a better fit than IMAP if you want:
 - message listing with structured metadata
 - thread-aware handling
 - reliable `internalDate`
-- push notifications via Gmail watch + Pub/Sub
 - easier long-term sync logic
 
 ## Practical Note
 
-If you only change the Gmail access method but keep the same date-filter logic, you will still have the same “which email in a thread should be processed” problem. The API helps, but the selection logic still needs to be designed properly.
+If you only change the Gmail access method but keep the same date-filter logic, you will still have the same "which email in a thread should be processed" problem. The API helps, but the selection logic still needs to be designed properly.
 
 ## Gmail API Migration Checklist For This Project
 
@@ -105,9 +111,9 @@ Use this order if you decide to replace IMAP later:
    - `sheets.sheets_handler.write_to_excel`
    - `agentcis.agentcis_handler.AgentcisSession`
 10. Decide how you want to process replies:
-    - by message date only
-    - by thread ID
-    - by thread ID plus latest message only
+   - by message date only
+   - by thread ID
+   - by thread ID plus latest message only
 
 ## Suggested Behavior For Replies
 
@@ -126,3 +132,20 @@ That is better than treating each message as fully independent when you expect f
 ## Minimal Migration Target
 
 If you want the smallest possible change, build a Gmail client that returns the same shape as the current IMAP client and only swap the implementation underneath. That lets the existing orchestrator continue working with minimal edits.
+
+## Your Current Use Case
+
+If your goal is only:
+
+- run the script manually
+- choose `last run` or a custom date/time window
+- process matching emails once
+
+then you do **not** need:
+
+- webhook handling
+- Pub/Sub
+- a background service
+
+In that setup, Gmail API would just be a mailbox reader replacement for IMAP, not a live system.
+
