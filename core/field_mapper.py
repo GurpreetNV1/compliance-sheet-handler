@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 
@@ -24,10 +25,27 @@ class FieldMapper:
     "rakshit.gupta229@gmail.com": "Rakshit Consultant",
     "prxxt.gurii@gmail.com": "Gurpreet Consultant",
 }
+
+    # Visa Outcomes tab uses "Grant"/"Refusal"/"Withdrawn" as the Outcome
+    # column's vocabulary, same as staff's own manual entries — not Yes/No.
+    # Nomination/sponsorship approvals are treated as "Grant" (a positive
+    # outcome, consistent with them already sharing this branch).
+    IMMI_OUTCOME_LABELS = {
+        "grant": "Grant",
+        "nomination": "Grant",
+        "sponsorship": "Grant",
+        "refusal": "Refusal",
+        "withdrawal": "Withdrawn",
+    }
     
     def _detect_consultant_from_cc(self, email_meta):
 
-        cc_list = email_meta.get("cc", []) or []
+        # Skills Assessment mail (VETASSESS/EA/TRA/etc.) is internally
+        # forwarded rather than cc'd — the handling consultant ends up in
+        # the forward's "To", not "Cc". CONSULTANT_EMAIL_MAP is a fixed
+        # whitelist of known staff addresses, so checking recipients too is
+        # safe for every doc type: a real client's address is never in it.
+        cc_list = (email_meta.get("cc", []) or []) + (email_meta.get("recipients", []) or [])
         # print("Email Meta: ", email_meta)
         print("========")
         print("Testing email data")
@@ -35,7 +53,7 @@ class FieldMapper:
         print("========")
 
         found = []
-        
+
         for email in cc_list:
 
             email = email.lower().strip()
@@ -58,6 +76,16 @@ class FieldMapper:
 
         # More people present → remove Ravi/Robin
         filtered = [c for c in found if c not in {ravi, robin}]
+
+        # A real ACS email was found addressed to ~13 internal staff at
+        # once (a broad team distribution, not a "forwarded to the handling
+        # consultant" pattern) — with recipients now checked alongside cc,
+        # that produced a useless 7-name list. More than 2 distinct names
+        # after the Ravi/Robin filter means this recipient list isn't a
+        # reliable single-consultant signal, so it's treated as
+        # inconclusive rather than dumping every name into the field.
+        if len(filtered) > 2:
+            return ""
 
         if filtered:
             return "\n".join(filtered)
@@ -161,7 +189,21 @@ class FieldMapper:
             return dt.strftime("%d-%m-%Y")
         except:
             return raw_date
-        
+
+    # Week Range — Friday-anchored 7-day window containing "now" (write time,
+    # not the document/email date — matches Dashboard/frontend/src/hooks/useDashboardData.js
+    # getDefaultDateRange, which treats every reporting week as ending on a Friday).
+
+    def _compute_week_range(self, now=None):
+
+        now = now or datetime.now()
+        days_since_friday = (now.weekday() - 4) % 7
+
+        week_start = now - timedelta(days=days_since_friday)
+        week_end = week_start + timedelta(days=7)
+
+        return f"{week_start:%Y-%m-%d} to {week_end:%Y-%m-%d}"
+
 
     # Handling Primary Secondary Applciants
 
@@ -191,6 +233,25 @@ class FieldMapper:
 
         return "\n".join(lines)
 
+    # ART — same "primary name + Agentcis name in brackets" convention as
+    # every other single-applicant doc type, factored out since 4 of the 5
+    # ART doc types need it identically.
+
+    def _art_final_name(self, doc, agentcis_data):
+
+        # A Case #-based lookup returns an already-verified full name from a
+        # previously-recorded row (e.g. resolving a bare surname like
+        # "KYADA" to "Chintan Rajeshbhai Kyada") — use it as-is rather than
+        # bracketing it behind the partial name this document extracted.
+        if agentcis_data.get("_resolved_via_case_lookup"):
+            return agentcis_data.get("clientName") or ""
+
+        primary = doc.get("primary_applicant", {}) or {}
+        primary_name = primary.get("name") or doc.get("name") or ""
+        agentcis_name = agentcis_data.get("clientName") or ""
+
+        return self._build_name_block(primary_name, [], agentcis_name)
+
     # Name Merge
 
     def _merge_names(self, doc_name, agentcis_name):
@@ -211,7 +272,17 @@ class FieldMapper:
 
     # Workflow
 
+    def _normalize_checklist_value(self, value):
+
+        if str(value).strip().lower() == "yes":
+            return "Yes"
+
+        return "No"
+
     def _workflow_status(self, doc_type, agentcis):
+
+        if not agentcis:
+            return "Application not created"
 
         status = (agentcis.get("applicationStatus") or "").lower()
         stage = (agentcis.get("currentStage") or "").lower()
@@ -226,6 +297,38 @@ class FieldMapper:
             return "No"
 
         if doc_type == "grant":
+
+            if status == "completed":
+                return "Yes"
+
+            return "No"
+
+        if doc_type == "art_lodgement_stage1":
+
+            if status == "in progress" and (
+                "lodgement" in stage or "outcome" in stage
+            ):
+                return "Yes"
+
+            return "No"
+
+        if doc_type == "art_outcome":
+
+            if status == "completed":
+                return "Yes"
+
+            return "No"
+
+        if doc_type == "skills_lodgement":
+
+            if status == "in progress" and (
+                "lodgement" in stage or "outcome" in stage
+            ):
+                return "Yes"
+
+            return "No"
+
+        if doc_type == "skills_outcome":
 
             if status == "completed":
                 return "Yes"
@@ -351,7 +454,7 @@ class FieldMapper:
 
             sheet_fields = {
 
-                "Email Received":
+                "Email Date":
                     self._format_email_date(email_meta.get("date")),
 
                 "Client Name \n(Agentcis Client Name)":
@@ -385,10 +488,843 @@ class FieldMapper:
             }
 
         # ==============================
+        # HEALTH EXAMINATION
+        # ==============================
+
+        if doc_type == "health_examination":
+            primary = doc.get("primary_applicant", {}) or {}
+            primary_name = primary.get("name") or ""
+            agentcis_name = agentcis_data.get("clientName") or ""
+
+            final_name = self._build_name_block(primary_name, [], agentcis_name)
+
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            sheet_fields = {
+
+                "Email Date":
+                    self._format_email_date(email_meta.get("date")),
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId"),
+
+                "Consultant":
+                    consultant_name,
+
+                "Visa Type":
+                    doc.get("visa_program"),
+
+                "Transaction Reference\nNumber":
+                    doc.get("transaction_reference_number"),
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId"),
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Comments/ Notes":
+                    ""
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        # ==============================
+        # S57 (Invitation to comment on information / Natural Justice)
+        # ==============================
+
+        if doc_type == "s57":
+            primary = doc.get("primary_applicant", {}) or {}
+            primary_name = primary.get("name") or ""
+            agentcis_name = agentcis_data.get("clientName") or ""
+
+            final_name = self._build_name_block(primary_name, [], agentcis_name)
+
+            request_date_raw = doc.get("date")
+            request_date = self._format_doc_date(request_date_raw)
+
+            last_date = self._calculate_last_date(
+                request_date_raw,
+                doc.get("days_to_respond")
+            )
+
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            sheet_fields = {
+
+                "Request Date":
+                    request_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId"),
+
+                "Consultant":
+                    consultant_name,
+
+                "Visa Type":
+                    doc.get("visa_program"),
+
+                "Transaction Reference\nNumber":
+                    doc.get("transaction_reference_number"),
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Last Date for Submission":
+                    last_date,
+
+                "Handled?":
+                    "",
+
+                "Reminder Required":
+                    "",
+
+                "Comments/ Notes":
+                    ""
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        # ==============================
+        # S64 (Request for 2nd VAC)
+        # ==============================
+
+        if doc_type == "s64":
+            primary = doc.get("primary_applicant", {}) or {}
+            primary_name = primary.get("name") or ""
+            agentcis_name = agentcis_data.get("clientName") or ""
+
+            final_name = self._build_name_block(primary_name, [], agentcis_name)
+
+            request_date_raw = doc.get("date")
+            request_date = self._format_doc_date(request_date_raw)
+
+            last_date = self._calculate_last_date(
+                request_date_raw,
+                doc.get("days_to_respond")
+            )
+
+            sponsor = doc.get("sponsor")
+            info_request = f"Second VAC payment required{f' — sponsor: {sponsor}' if sponsor else ''}"
+
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            sheet_fields = {
+
+                "Email Received":
+                    handled_date,
+
+                "Request Date":
+                    request_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId"),
+
+                "Consultant":
+                    consultant_name,
+
+                "Visa Type":
+                    doc.get("visa_program"),
+
+                "Transaction Reference\nNumber":
+                    doc.get("transaction_reference_number"),
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId"),
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Last Date for Submission":
+                    last_date,
+
+                "Information Request":
+                    info_request,
+
+                "Handled?":
+                    "",
+
+                "Reminder Required":
+                    "",
+
+                "Comments/ Notes":
+                    ""
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        # ==============================
+        # CITIZENSHIP APPOINTMENT LETTER
+        # ==============================
+
+        if doc_type == "citizenship_appointment":
+            primary = doc.get("primary_applicant", {}) or {}
+            primary_name = primary.get("name") or ""
+            agentcis_name = agentcis_data.get("clientName") or ""
+
+            final_name = self._build_name_block(primary_name, [], agentcis_name)
+
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            appointment = doc.get("appointment_date_time") or ""
+            place = doc.get("appointment_place") or ""
+            appointment_display = f"{appointment}\n{place}".strip("\n") if place else appointment
+
+            sheet_fields = {
+
+                "Email Received":
+                    handled_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId") or doc.get("client_id"),
+
+                "Consultant":
+                    consultant_name,
+
+                "Transaction Reference\nNumber":
+                    doc.get("transaction_reference_number"),
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Appointment Date & Time":
+                    appointment_display,
+
+                "Reminder Date":
+                    "",
+
+                "Comments/ Notes":
+                    ""
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        # ==============================
+        # NOTIFICATION (generic bucket — refund / withdrawal / assessment
+        # commence / citizenship approval / general). Both "Email Handled" and
+        # "Email Handled Date" are supplied since the target tabs disagree on
+        # which label they use — the Apps Script's header matching keeps
+        # whichever one actually exists on that tab and ignores the other.
+        # ==============================
+
+        if doc_type == "notification":
+            primary_name = doc.get("name") or ""
+            agentcis_name = agentcis_data.get("clientName") or ""
+
+            final_name = self._merge_names(primary_name, agentcis_name)
+
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            sheet_fields = {
+
+                "Email Received":
+                    handled_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId"),
+
+                "Consultant":
+                    consultant_name,
+
+                "Visa Type":
+                    doc.get("visa_program"),
+
+                "Transaction Reference\nNumber":
+                    doc.get("transaction_reference_number"),
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId"),
+
+                "Notification":
+                    doc.get("notification_text"),
+
+                "Email Handled":
+                    handled_date,
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Notification Date":
+                    handled_date,
+
+                "Comments/ Notes":
+                    ""
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        # ==============================
+        # ART (Administrative Review Tribunal) — separate case-ID scheme,
+        # single shared spreadsheet regardless of mailbox. Stage 1 and stage
+        # 2 both target the "Lodgement" tab; stage 2 doesn't have enough of
+        # its own data to justify a fresh row (no online reference number,
+        # Consultant/Form956/etc. all unknown from this letter alone), so it
+        # returns a "match_name" alongside a minimal fields dict — the
+        # orchestrator uses that to request an update-in-place (upsert) of
+        # the stage 1 row rather than a plain append.
+        # ==============================
+
+        if doc_type == "art_lodgement_stage1":
+
+            final_name = self._art_final_name(doc, agentcis_data)
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            checklist = agentcis_data.get("checklist", {})
+            form956 = self._normalize_checklist_value(checklist.get("Form 956"))
+            client_agreement = self._normalize_checklist_value(checklist.get("Client Agreement"))
+            proof_payment = self._normalize_checklist_value(checklist.get(
+                "Proof of Invoice Payment (Paid/Partially Paid)"
+            ))
+
+            lodged_date = self._format_doc_date(doc.get("date"))
+            workflow = self._workflow_status("art_lodgement_stage1", agentcis_data)
+
+            sheet_fields = {
+
+                "Email Received":
+                    lodged_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId") or "",
+
+                "Consultant":
+                    consultant_name,
+
+                "Online Reference Number":
+                    doc.get("online_reference_number"),
+
+                "Case #":
+                    doc.get("case_number") or "",
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId") or "",
+
+                "Form 956":
+                    form956,
+
+                "Client Agreement":
+                    client_agreement,
+
+                "Proof of Payment":
+                    proof_payment,
+
+                "Workflow Updated on Agentcis?":
+                    workflow,
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Notes/Comments":
+                    f"[{lodged_date}] Lodgement Acknowledgement" if lodged_date else "Lodgement Acknowledgement",
+
+                "Week Range":
+                    self._compute_week_range()
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        if doc_type == "art_lodgement_stage2":
+
+            primary = doc.get("primary_applicant", {}) or {}
+            applicant_name = primary.get("name") or ""
+
+            letter_date = self._format_doc_date(doc.get("date"))
+
+            sheet_fields = {
+
+                "Case #":
+                    doc.get("case_number") or "",
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Notes/Comments":
+                    f"[{letter_date}] Acknowledgement of Application" if letter_date else "Acknowledgement of Application",
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields,
+                "match_name": applicant_name,
+            }
+
+        if doc_type == "art_outcome":
+
+            final_name = self._art_final_name(doc, agentcis_data)
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            outcome_date = self._format_doc_date(doc.get("date"))
+            workflow = self._workflow_status("art_outcome", agentcis_data)
+
+            sheet_fields = {
+
+                "Email Received":
+                    outcome_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId") or "",
+
+                "Consultant":
+                    consultant_name,
+
+                "Case #":
+                    doc.get("case_number") or "",
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId") or "",
+
+                "Outcome":
+                    doc.get("outcome") or "",
+
+                "Workflow Updated on Agentcis?":
+                    workflow,
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Notes/Comments":
+                    "",
+
+                "Week Range":
+                    self._compute_week_range()
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        if doc_type == "art_notice_of_hearing":
+
+            final_name = self._art_final_name(doc, agentcis_data)
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            sheet_fields = {
+
+                "Email Date":
+                    self._format_doc_date(doc.get("date")),
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId") or "",
+
+                "Consultant":
+                    consultant_name,
+
+                "Case #":
+                    doc.get("case_number") or "",
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId") or "",
+
+                "Hearing Details":
+                    doc.get("hearing_details") or "",
+
+                "Comments/Notes":
+                    "",
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        if doc_type == "art_notification":
+
+            final_name = self._art_final_name(doc, agentcis_data)
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            sheet_fields = {
+
+                "Email Received":
+                    handled_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId") or "",
+
+                "Consultant":
+                    consultant_name,
+
+                "Online Reference Number":
+                    doc.get("online_reference_number"),
+
+                "Case #":
+                    doc.get("case_number") or "",
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId") or "",
+
+                "Notification":
+                    doc.get("notification_text"),
+
+                "Comments/Notes":
+                    "",
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        # ==============================
+        # SKILLS ASSESSMENT (VETASSESS / EA / TRA) — one shared spreadsheet
+        # regardless of mailbox. `doc.get("authority")` is always set
+        # explicitly by SkillsExtractor; `doc.get("partner_application_id")`
+        # is each authority's own reference (VETASSESS ref / EA Application
+        # ID / TRA ref), always populated into transaction_reference_number
+        # too so business_rules.py's existing TRN-based grouping works
+        # unchanged.
+        # ==============================
+
+        if doc_type == "skills_lodgement":
+
+            final_name = self._art_final_name(doc, agentcis_data)
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            checklist = agentcis_data.get("checklist", {})
+            form956 = self._normalize_checklist_value(checklist.get("Form 956"))
+            client_agreement = self._normalize_checklist_value(checklist.get("Client Agreement"))
+            proof_payment = self._normalize_checklist_value(checklist.get(
+                "Proof of Invoice Payment (Paid/Partially Paid)"
+            ))
+
+            sheet_fields = {
+
+                "Email Received":
+                    handled_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId") or "",
+
+                "Consultant":
+                    consultant_name,
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId") or "",
+
+                "Partner Application ID":
+                    doc.get("partner_application_id"),
+
+                "Skills Assessment Authority":
+                    doc.get("authority"),
+
+                "Form 956":
+                    form956,
+
+                "Client Agreement":
+                    client_agreement,
+
+                "Proof of Payment":
+                    proof_payment,
+
+                "Workflow Updated on Agentcis?":
+                    self._workflow_status("skills_lodgement", agentcis_data),
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Notes":
+                    "",
+
+                "Week Range":
+                    self._compute_week_range()
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        if doc_type == "skills_outcome":
+
+            final_name = self._art_final_name(doc, agentcis_data)
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            outcome_date_raw = doc.get("outcome_date")
+            outcome_date = self._format_doc_date(outcome_date_raw) if outcome_date_raw else handled_date
+
+            # Only TRA's PSA pathway is reliably distinguishable from what
+            # we extract — VETASSESS/EA don't give a clean signal for "Full
+            # Skills Assessment" vs "Qualifications Only", so left blank
+            # rather than guessed.
+            assessment_type = "Provisional Skills Assessment" if doc.get("authority") == "TRA" else ""
+
+            sheet_fields = {
+
+                "Email Received":
+                    handled_date,
+
+                "Outcome Date":
+                    outcome_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId") or "",
+
+                "Consultant":
+                    consultant_name,
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId") or "",
+
+                "Partner Application ID":
+                    doc.get("partner_application_id"),
+
+                "Skills Assessment Authority":
+                    doc.get("authority"),
+
+                "Assessment Type":
+                    assessment_type,
+
+                "Outcome":
+                    doc.get("outcome") or "",
+
+                "Occupation":
+                    doc.get("occupation") or "",
+
+                "Workflow Updated on Agentcis?":
+                    self._workflow_status("skills_outcome", agentcis_data),
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Comments/Notes":
+                    "",
+
+                "Week Range":
+                    self._compute_week_range()
+            }
+
+            result = {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+            # Approvals Expiry is filled in manually by staff, never by the
+            # pipeline — no companion row is generated here.
+            return result
+
+        if doc_type == "skills_request_info":
+
+            final_name = self._art_final_name(doc, agentcis_data)
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            last_date = ""
+            deadline_raw = doc.get("deadline_raw")
+            if deadline_raw and re.match(r"^\d{1,2}\s+\w+\s+\d{4}$", deadline_raw):
+                last_date = self._format_doc_date(deadline_raw)
+
+            sheet_fields = {
+
+                "Email Received":
+                    handled_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId") or "",
+
+                "Consultant":
+                    consultant_name,
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId") or "",
+
+                "Partner Application ID":
+                    doc.get("partner_application_id"),
+
+                "Skills Assessment Authority":
+                    doc.get("authority"),
+
+                # Left blank on request — staff read the actual email
+                # rather than relying on the auto-extracted text here.
+                "Information Request":
+                    "",
+
+                "Last Date of Submission":
+                    last_date,
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Handled?":
+                    "",
+
+                "Comments/Notes":
+                    "",
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        if doc_type == "skills_notification":
+
+            final_name = self._art_final_name(doc, agentcis_data)
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            sheet_fields = {
+
+                "Notification Date":
+                    handled_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId") or "",
+
+                "Consultant":
+                    consultant_name,
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId") or "",
+
+                "Partner Application ID":
+                    doc.get("partner_application_id"),
+
+                "Skills Assessment Authority":
+                    doc.get("authority"),
+
+                "Notification":
+                    doc.get("notification_text"),
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Comments/Notes":
+                    "",
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        if doc_type == "skills_jrp_notification":
+
+            final_name = self._art_final_name(doc, agentcis_data)
+            consultant_name = self._detect_consultant_from_cc(email_meta)
+            if not consultant_name:
+                consultant_name = agentcis_data.get("assignee")
+
+            sheet_fields = {
+
+                "Email Received":
+                    handled_date,
+
+                "Client Name \n(Agentcis Client Name)":
+                    final_name,
+
+                "Client ID":
+                    agentcis_data.get("internalId") or "",
+
+                "Consultant":
+                    consultant_name,
+
+                "Agentcis Application\nID":
+                    agentcis_data.get("applicationId") or "",
+
+                "Partner Application ID":
+                    doc.get("partner_application_id"),
+
+                "Notification Type":
+                    doc.get("notification_type"),
+
+                "Email Handled Date":
+                    handled_date,
+
+                "Comments/Notes":
+                    "",
+            }
+
+            return {
+                "document_type": doc_type,
+                "fields": sheet_fields
+            }
+
+        # ==============================
         # GRANT
         # ==============================
 
-        if doc_type == 'grant' or doc_type == 'nomination' or doc_type == 'sponsorship':
+        if doc_type in self.IMMI_OUTCOME_LABELS:
             primary = doc.get("primary_applicant", {}) or {}
             secondary = doc.get("secondary_applicants", []) or []
             # print("====Secondary Appilcant Main block====: ", secondary)
@@ -451,8 +1387,8 @@ class FieldMapper:
                     agentcis_data.get("applicationId"),
 
                 "Outcome":
-                    "Yes",
-                    
+                    self.IMMI_OUTCOME_LABELS[doc_type],
+
                 "Workflow Updated on Agentcis":
                     workflow,
 
@@ -460,7 +1396,10 @@ class FieldMapper:
                     handled_date,
 
                 "Comments/ Notes":
-                    ""
+                    "",
+
+                "Week Range":
+                    self._compute_week_range()
             }
 
             return {
@@ -487,18 +1426,17 @@ class FieldMapper:
         # print("====Final Name====: ", final_name)
         checklist = agentcis_data.get("checklist", {})
 
-        form956 = checklist.get("Form 956", "NO")
-        client_agreement = checklist.get("Client Agreement", "NO")
-        proof_payment = checklist.get(
-            "Proof of Invoice Payment (Paid/Partially Paid)",
-            "NO"
-        )
+        form956 = self._normalize_checklist_value(checklist.get("Form 956"))
+        client_agreement = self._normalize_checklist_value(checklist.get("Client Agreement"))
+        proof_payment = self._normalize_checklist_value(checklist.get(
+            "Proof of Invoice Payment (Paid/Partially Paid)"
+        ))
 
         workflow = self._workflow_status(doc_type, agentcis_data)
         consultant_name = self._detect_consultant_from_cc(email_meta)
         if not consultant_name:
             consultant_name = agentcis_data.get("assignee")
-            
+
         sheet_fields = {
 
             "Email Received":
@@ -511,7 +1449,7 @@ class FieldMapper:
                 final_name,
 
             "Client ID":
-                agentcis_data.get("internalId"),
+                agentcis_data.get("internalId") or "",
 
             "Consultant":
                 consultant_name,
@@ -523,7 +1461,7 @@ class FieldMapper:
                 doc.get("transaction_reference_number"),
 
             "Agentcis Application\nID":
-                agentcis_data.get("applicationId"),
+                agentcis_data.get("applicationId") or "",
 
             "Form 956":
                 form956,
@@ -541,7 +1479,10 @@ class FieldMapper:
                 handled_date,
 
             "Comments/ Notes":
-                ""
+                "",
+
+            "Week Range":
+                self._compute_week_range()
         }
 
         return {

@@ -14,6 +14,48 @@ class BusinessRulesEngine:
     
     
     
+    def _drop_noise_skills_duplicates(self, docs):
+        # Skills Assessment doc-type detection is often subject-driven (the
+        # same subject is shared by every attachment of one email), so an
+        # unrelated PDF attached alongside a real trigger email (e.g. a
+        # generic government form attached to a CA ANZ request-info email)
+        # can independently satisfy the same subject-based trigger and
+        # produce a second, essentially blank "skills_*" doc for the same
+        # email — confirmed live during Phase 4b testing. Within one email's
+        # batch, if multiple docs share a document_type and at least one of
+        # them actually carries identifying info (a reference, a name, or an
+        # outcome), the empty sibling(s) are dropped as noise. A doc_type
+        # with only one instance, or where every instance is empty (e.g. a
+        # real AITSL notification that legitimately has neither), is left
+        # untouched — this only removes duplicates, never a case's only doc.
+        by_type = defaultdict(list)
+        others = []
+
+        for doc in docs:
+            dtype = doc.get("document_type") or ""
+            if dtype.startswith("skills_"):
+                by_type[dtype].append(doc)
+            else:
+                others.append(doc)
+
+        def is_informative(d):
+            return bool(
+                d.get("transaction_reference_number")
+                or d.get("name")
+                or (d.get("primary_applicant") or {}).get("name")
+                or d.get("outcome")
+            )
+
+        result = list(others)
+        for dtype, group in by_type.items():
+            if len(group) == 1:
+                result.extend(group)
+                continue
+            informative = [d for d in group if is_informative(d)]
+            result.extend(informative if informative else group)
+
+        return result
+
     def _group_by_trn(self, docs):
 
         groups = defaultdict(list)
@@ -58,6 +100,27 @@ class BusinessRulesEngine:
                 best_doc = doc
 
         base = copy.deepcopy(best_doc)
+
+        # A real AQATO Positive outcome was found live where the covering
+        # email's actual determination ("successfully completing a Skills
+        # Assessment...") only exists in the email body, while the one PDF
+        # attached that day was a secondary "Qualifications" document with
+        # no outcome wording at all — both share the same reference number,
+        # both name the same single applicant, so the applicant-count logic
+        # above picked whichever came first, silently losing a real
+        # Positive/Negative/Cancelled determination whenever it landed on
+        # the other doc. Borrowed here rather than in the selection step
+        # above so every other document_type's existing behavior is
+        # untouched.
+        if base.get("document_type") == "skills_outcome" and not base.get("outcome"):
+            for doc in doc_group:
+                if doc.get("outcome"):
+                    base["outcome"] = doc.get("outcome")
+                    base["outcome_date"] = doc.get("outcome_date") or base.get("outcome_date")
+                    base["occupation"] = doc.get("occupation") or base.get("occupation")
+                    if doc.get("validity_years"):
+                        base["validity_years"] = doc.get("validity_years")
+                    break
 
         # --------------------------------------------------
         # STEP 2 — If already multi applicants → done
@@ -125,6 +188,8 @@ class BusinessRulesEngine:
 
         if not extracted_docs:
             return []
+
+        extracted_docs = self._drop_noise_skills_duplicates(extracted_docs)
 
         checklist_docs = [
             d for d in extracted_docs
@@ -261,7 +326,7 @@ class BusinessRulesEngine:
         is_visitor = "visitor" in visa_text
 
         if is_visitor:
-            print("Visitor visa detected → multiple entries")
+            print("Visitor visa detected -> multiple entries")
 
             return [
                 self._create_payload(doc)
@@ -269,7 +334,7 @@ class BusinessRulesEngine:
             ]
 
         # Non visitor → single combined entry
-        print("Non-visitor multiple grants → single entry")
+        print("Non-visitor multiple grants -> single entry")
 
         combined_names = []
         combined_trn = []

@@ -8,8 +8,13 @@ colorama==0.4.6
 cryptography==46.0.5
 et_xmlfile==2.0.0
 fastapi==0.128.8
+google-api-python-client==2.198.0
+google-auth==2.56.2
+google-auth-httplib2==0.4.0
+googleapis-common-protos==1.75.0
 greenlet==3.3.1
 h11==0.16.0
+httplib2==0.32.0
 idna==3.11
 numpy==2.4.2
 openpyxl==3.1.5

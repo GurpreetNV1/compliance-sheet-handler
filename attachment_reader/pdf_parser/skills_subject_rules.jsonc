@@ -1,0 +1,128 @@
+[
+
+// VETASSESS
+{"subject_contains": "VETASSESS - Application Received", "tab": "lodgement"},
+{"subject_contains": "VETASSESS - Application Completed", "tab": "outcome"},
+{"subject_contains": "VETASSESS - Received Documentation", "tab": "ignore"},
+{"subject_contains": "VETASSESS - Partial Received Documentation", "tab": "ignore"},
+{"subject_contains": "Outstanding Documentation", "tab": "request_info"},
+{"subject_contains": "PSR PRIORITY PROCESSING REQUEST", "tab": "ignore"},
+{"subject_contains": "Your payment to VETASSESS", "tab": "ignore"},
+{"subject_contains": "VETASSESS File Reference", "tab": "ignore"},
+
+// EA (Engineers Australia)
+{"subject_contains": "Agent Authorisation Approved", "tab": "ignore"},
+{"subject_contains": "Engineers Australia - Outcome for Application", "tab": "outcome"},
+{"subject_contains": "Application Cancelled", "tab": "outcome"},
+{"subject_contains": "Request for Additional Information", "tab": "request_info"},
+{"subject_contains": "Engineers Australia Account Created", "tab": "ignore"},
+{"subject_contains": "Review Agent Authorisation", "tab": "lodgement"},
+{"subject_contains": "Additional Information Request Expired", "tab": "ignore"},
+
+// ACECQA
+{"subject_contains": "Complete application for Skills Assessment received", "tab": "ignore"},
+{"subject_contains": "Outcome of Skills Assessment", "tab": "outcome"},
+{"subject_contains": "Incomplete application", "tab": "request_info"},
+{"subject_contains": "Further information request", "tab": "request_info"},
+{"subject_contains": "Your payment to ACECQA", "tab": "ignore"},
+{"subject_contains": "Payment of your ACECQA Skills Assessment Application", "tab": "ignore"},
+{"subject_contains": "ACECQA Application Submitted Successfully", "tab": "lodgement"},
+
+// ACS (Australian Computer Society) -- must stay ahead of AQATO's generic
+// "Skills Assessment Result" rule below, since ACS's own subject also
+// contains that phrase.
+{"subject_contains": "ACS Migration Skill Assessment Payment Receipt", "tab": "ignore"},
+{"subject_contains": "ACS Skills Assessment Result", "tab": "ignore"},
+{"subject_contains": "Email Missing Documents Ref", "tab": "ignore"},
+{"subject_contains": "Migration Agent Authorisation Request", "tab": "lodgement"},
+{"subject_contains": "Migration Agent De-authorisation Request", "tab": "outcome"},
+{"subject_contains": "New Message from ACS Skills Migration Assessment Team", "tab": "ignore"},
+{"subject_contains": "ACS Skills Migration Assessment Outcome", "tab": "outcome"},
+
+// AIQS (Australian Institute of Quantity Surveyors) -- no reliable subject
+// pattern found (real subjects are agent-composed, not authority-templated),
+// so AIQS has no entries here; detection is handled by body/PDF content in
+// skills_extractor.py instead.
+
+// AITSL (Australian Institute for Teaching and School Leadership)
+{"subject_contains": "Application submitted", "tab": "lodgement"},
+{"subject_contains": "Skills Assessment: request for information", "tab": "request_info"},
+{"subject_contains": "Notification email from AITSL", "tab": "ignore"},
+{"subject_contains": "Your assessment has been finalised", "tab": "outcome"},
+{"subject_contains": "Payment request", "tab": "ignore"},
+{"subject_contains": "Payment received", "tab": "ignore"},
+
+// ANMAC
+{"subject_contains": "Completion of Online Form and Payment", "tab": "request_info"},
+{"subject_contains": "ANMAC Skills Assessment - Application Approved", "tab": "outcome"},
+{"subject_contains": "More information required", "tab": "request_info"},
+{"subject_contains": "Additional ID Documents", "tab": "request_info"},
+{"subject_contains": "SMS - GradReady", "tab": "ignore"},
+{"subject_contains": "Cash Sale", "tab": "lodgement"},
+{"subject_contains": "Passport Expiring", "tab": "notification"},
+
+// AQATO (ATTC-facilitated TRA OSAP/TSS trades channel)
+{"subject_contains": "APPLICATION RECEIVED", "tab": "lodgement"},
+{"subject_contains": "Skills Assessment Result", "tab": "outcome"},
+{"subject_contains": "Stage 1 (Declined)", "tab": "outcome"},
+{"subject_contains": "(WITHDRAWN)", "tab": "outcome"},
+{"subject_contains": "APPLICATION CLOSED", "tab": "outcome"},
+{"subject_contains": "ACTION REQUIRED (STAGE 1)", "tab": "request_info"},
+{"subject_contains": "Request outstanding information", "tab": "request_info"},
+{"subject_contains": "Request additional information", "tab": "request_info"},
+{"subject_contains": "TECHNICAL INTERVIEW", "tab": "notification"},
+{"subject_contains": "Payment Details", "tab": "ignore"},
+{"subject_contains": "Employment Verification Pending", "tab": "notification"},
+{"subject_contains": "REINSTATED", "tab": "notification"},
+
+// CA ANZ (Chartered Accountants Australia and New Zealand)
+{"subject_contains": "your migration skills assessment application has been received", "tab": "lodgement"},
+{"subject_contains": "CA ANZ migration skills assessment - assessment complete", "tab": "outcome"},
+{"subject_contains": "syllabus required", "tab": "request_info"},
+{"subject_contains": "further information required", "tab": "request_info"},
+{"subject_contains": "Tax invoice from Chartered Accountants Australia and New Zealand", "tab": "notification"},
+{"subject_contains": "CA ANZ Auto Response", "tab": "ignore"},
+{"subject_contains": "Applicant authorised you to continue", "tab": "notification"},
+
+// TRA (Trades Recognition Australia) -- the 999-family reference is TRA's
+// PSA/JRP pathway, which pays at submission time. The Payment Receipt IS
+// the lodgement event there (confirmed from a real sample: body said
+// "successfully paid and submitted") -- must stay ahead of the generic
+// Payment Receipt -> notification fallback down in the cross-authority
+// section below.
+{
+  "subject_contains": ["Payment Receipt"],
+  "subject_regex": "TRA\\d{2}/999\\d+",
+  "tab": "lodgement"
+},
+{"subject_contains": "Acknowledgement of Application for Assessment", "tab": "notification"},
+{"subject_contains": "Migration Skills Assessment TRA", "tab": "notification"},
+{"subject_contains": "PROVISIONAL SKILLS ASSESSMENT (PSA) - OUTCOME", "tab": "outcome"},
+{"subject_contains": "PSA VERIFICATION REQUEST", "tab": "notification"},
+{"subject_contains": "PSA - ADDITIONAL", "tab": "request_info"},
+
+// TRA -- JRP (Job Ready Program), its own tab
+{"subject_contains": "Job Ready Program", "tab": "jrp"},
+{"subject_contains": "Job Ready Workplace", "tab": "notification"},
+{"subject_contains": "JRFA Outcome", "tab": "jrp"},
+{"subject_contains": "JRFA Invite", "tab": "notification"},
+{"subject_contains": "JRWA", "tab": "jrp"},
+{"subject_contains": "Job Ready Employment", "tab": "jrp"},
+{"subject_contains": "Job Ready Final", "tab": "jrp"},
+{"subject_contains": "Additional Documents Required from Applicant", "tab": "request_info"},
+
+
+// Ignore -- confirmed pure noise from research (portal/account admin,
+// marketing, holiday greetings), never a real case event.
+{"subject_contains": "Reset your password", "tab": "ignore"},
+{"subject_contains": "Please verify your email", "tab": "ignore"},
+{"subject_contains": "Multi-Factor Authentication Code", "tab": "ignore"},
+{"subject_contains": "New Applicant Portal Launching", "tab": "ignore"},
+{"subject_contains": "Season's Greetings", "tab": "ignore"},
+{"subject_contains": "Happy Holidays", "tab": "ignore"},
+{"subject_contains": "Happy New Year", "tab": "ignore"},
+{"subject_contains": "We Value Your Feedback", "tab": "ignore"},
+{"subject_contains": "Your Feedback Matters", "tab": "ignore"},
+{"subject_contains": "Migration Skills Assessment Portal Feedback", "tab": "ignore"}
+
+]
