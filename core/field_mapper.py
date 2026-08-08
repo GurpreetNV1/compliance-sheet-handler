@@ -21,9 +21,19 @@ class FieldMapper:
     "ravi@acmemigration.com": "Ravi Shah",
     "prabhjot.rana@acmemigration.com": "Prabhjot Rana",
     "prabhjot.kaur@acmemigration.com": "Prabhjot Kaur",
-    "harsh.ahm@acmemigration.com":"Harsh Karangiya",
-    "rakshit.gupta229@gmail.com": "Rakshit Consultant",
-    "prxxt.gurii@gmail.com": "Gurpreet Consultant",
+    "harsh.ahm@acmemigration.com": "Harsh",
+    "riddhi.joshi@acmemigration.com": "Riddhi Joshi",
+    "admissions2@acmemigration.com": "Helly Parikh",
+    "mona.singh@acmemigration.com": "Mona Singh",
+    "admissions@acmemigration.com": "Parabhdeep Singh",
+    "babita@acmemigration.com": "Babita Garg",
+    "studentcounsellor2@acmemigration.com": "Shihab Uddin Chowdhury",
+    "studentcounsellor1@acmemigration.com": "Manpreet Kaur Virk",
+    "meenal@acmemigration.com": "Meenal Patel",
+    "sunaina@acmemigration.com": "Sunaina",
+    "mansi@acmemigration.com": "Mansi",
+    "nisha@acmemigration.com": "Nisha Sorari",
+    "naman@acmemigration.com": "Naman",
 }
 
     # Visa Outcomes tab uses "Grant"/"Refusal"/"Withdrawn" as the Outcome
@@ -35,9 +45,148 @@ class FieldMapper:
         "nomination": "Grant",
         "sponsorship": "Grant",
         "refusal": "Refusal",
+        "nomination_refusal": "Refusal",
         "withdrawal": "Withdrawn",
+        "nomination_withdrawal": "Withdrawn",
     }
-    
+
+    # Exact "Visa Type" dropdown options, read directly from the Visa and
+    # Student sheets' data validation rules — not derived from wording we
+    # guessed. Extracted visa_program text is close to these but often
+    # differs in small ways (extra qualifier words, missing "Subsequent
+    # Entrant", stream names like "(Tourist)"/"(Sponsored)" that the
+    # dropdown doesn't distinguish), which is exactly why staff had to
+    # reselect from the dropdown by hand after every write.
+    VISA_TYPE_DROPDOWN_VALUES = (
+        "Bridging B Visa",
+        "Citizenship by Conferral",
+        "DAMA Endorsement Application",
+        "DAMA Labour Agreement",
+        "DAMA Labour Agreement In Effect",
+        "Employer Nomination Scheme (subclass 186)",
+        "Employer Nomination Scheme (subclass 186) - Nomination",
+        "Evidence of Australian Citizenship",
+        "New Zealand Citizen Family Relationship (subclass 461)",
+        "Parent Sponsor in relation to a Sponsored Parent (Temporary) (subclass 870) - Sponsorship",
+        "Parent Sponsor in relation to a Sponsored Parent (Temporary) (subclass 870) visa",
+        "Partner (Provisional) (subclass 309)",
+        "Partner (subclass 100)",
+        "Partner (subclass 309)/Partner (subclass 100)",
+        "Partner (subclass 801)",
+        "Partner (subclass 820)",
+        "Partner (subclass 820)/Partner (subclass 801)",
+        "Permanent Residence (Skilled Regional) (subclass 191)",
+        "Resident Return (subclass 155) Visa",
+        "Skilled - Independent (subclass 189)",
+        "Skilled - Nominated (subclass 190)",
+        "Skilled - Regional (subclass 887)",
+        "Skilled Employer Sponsored Regional (Provisional) (subclass 494)",
+        "Skilled Employer Sponsored Regional (Provisional) (subclass 494) - Nomination",
+        "Skilled Work Regional (Provisional) (subclass 491)",
+        "Skilled Work Regional (Provisional) (Subsequent Entrant) (subclass 491)",
+        "Skills in Demand (subclass 482)",
+        "Skills in Demand (subclass 482) - Nomination",
+        "Sponsored Parent (Temporary) (subclass 870)",
+        "Standard Business Sponsor",
+        "Temporary Activities Sponsor",
+        "Temporary Activity (Subsequent Entrant) (subclass 408)",
+        "Temporary Graduate (subclass 485)",
+        "Temporary Graduate (Subsequent Entrant) (subclass 485)",
+        "Temporary Skill Shortage (subclass 482)",
+        "Temporary Skill Shortage (subclass 482) - Nomination",
+        "Temporary Work (subclass 400)",
+        "Training (subclass 407)",
+        "Training (subclass 407) - Nomination",
+        "Visitor (subclass 600)",
+        "Working Holiday (Extension) (subclass 417) visa",
+        # Student sheet's own "Visa Type"-equivalent column.
+        "Student (subclass 500)",
+        "Student (Subsequent Entrant) (subclass 500)",
+    )
+
+    # Phrases that distinguish two dropdown options sharing the same
+    # subclass number, beyond the "- Nomination" suffix (checked
+    # separately). "Skills in Demand"/"Temporary Skill Shortage" are the
+    # old/new names for the same subclass 482 program (renamed Dec 2024) —
+    # whichever one the source document actually used is what should be
+    # matched, not always the newer name.
+    _VISA_TYPE_DISTINGUISHING_PHRASES = (
+        "subsequent entrant",
+        "skills in demand",
+        "temporary skill shortage",
+    )
+
+    @staticmethod
+    def _visa_type_subclass_numbers(value):
+        return set(re.findall(r"subclass\s*(\d+)", value.lower()))
+
+    @staticmethod
+    def _visa_type_is_nomination(value):
+        # A strict "- Nomination" suffix, not a bare substring match — the
+        # base "Employer Nomination Scheme (subclass 186)" option already
+        # has "Nomination" in its own name and must not be mistaken for the
+        # dedicated "- Nomination" variant.
+        return bool(re.search(r"-\s*nomination\s*$", value.strip(), re.IGNORECASE))
+
+    def _normalize_visa_type_for_dropdown(self, visa_program):
+        if not visa_program:
+            return visa_program
+
+        lower = visa_program.lower()
+        raw_numbers = set(re.findall(r"subclass\s*(\d+)", lower))
+        if not raw_numbers:
+            # No subclass number to key off (e.g. "Bridging B Visa",
+            # sponsorship types) — nothing to normalize against.
+            return visa_program
+
+        # A combined "X/Y" entry (e.g. Partner subclass 820/801) applies
+        # only when the source text references every subclass number that
+        # entry covers.
+        combined_matches = [
+            value for value in self.VISA_TYPE_DROPDOWN_VALUES
+            if len(self._visa_type_subclass_numbers(value)) > 1
+            and self._visa_type_subclass_numbers(value).issubset(raw_numbers)
+        ]
+        if len(combined_matches) == 1:
+            return combined_matches[0]
+
+        single_candidates = [
+            value for value in self.VISA_TYPE_DROPDOWN_VALUES
+            if len(self._visa_type_subclass_numbers(value)) == 1
+            and self._visa_type_subclass_numbers(value).issubset(raw_numbers)
+        ]
+        if not single_candidates:
+            return visa_program
+
+        raw_is_nomination = self._visa_type_is_nomination(visa_program)
+        nomination_filtered = [
+            value for value in single_candidates
+            if self._visa_type_is_nomination(value) == raw_is_nomination
+        ]
+        if not nomination_filtered:
+            return visa_program
+
+        if len(nomination_filtered) == 1:
+            return nomination_filtered[0]
+
+        raw_phrases = {p for p in self._VISA_TYPE_DISTINGUISHING_PHRASES if p in lower}
+        scored = [
+            (value, {p for p in self._VISA_TYPE_DISTINGUISHING_PHRASES if p in value.lower()})
+            for value in nomination_filtered
+        ]
+        group_phrases = set().union(*(phrases for _, phrases in scored))
+        target = raw_phrases & group_phrases
+
+        exact = [value for value, phrases in scored if phrases == target]
+        if len(exact) == 1:
+            return exact[0]
+
+        # Genuinely ambiguous (e.g. the 3 distinct subclass-870 entries,
+        # which share no distinguishing signal) — leave as-is rather than
+        # guess wrong; staff picks the right one from the dropdown by hand,
+        # same as today.
+        return visa_program
+
     def _detect_consultant_from_cc(self, email_meta):
 
         # Skills Assessment mail (VETASSESS/EA/TRA/etc.) is internally
@@ -84,29 +233,35 @@ class FieldMapper:
         # after the Ravi/Robin filter means this recipient list isn't a
         # reliable single-consultant signal, so it's treated as
         # inconclusive rather than dumping every name into the field.
-        if len(filtered) > 2:
+        if len(filtered) > 5:
             return ""
 
+        # Up to 5 real candidates remain — take whoever appears first in
+        # cc/recipient order as the single handling consultant, rather than
+        # writing multiple names.
         if filtered:
-            return "\n".join(filtered)
+            return filtered[0]
 
         return "\n".join(found)
 
     def _detect_sponsorship_type(self, subject: str):
 
+        # "Standard Business Sponsor" / "Temporary Activities Sponsor" are
+        # the actual dropdown options (no "-ship" suffix) — confirmed
+        # against the real Visa Type dropdown, not guessed from wording.
         if not subject:
             return "Sponsorship"
 
         text = subject.lower()
 
         if "standard business sponsorship" in text:
-            return "Standard Business Sponsorship"
+            return "Standard Business Sponsor"
 
         if "temporary activities sponsorship" in text:
-            return "Temporary Activities Sponsorship"
+            return "Temporary Activities Sponsor"
 
         return "Sponsorship"
-    
+
 
     def _resolve_visa_type(self, doc, subject):
 
@@ -115,7 +270,7 @@ class FieldMapper:
         if visa == "Sponsorship":
             return self._detect_sponsorship_type(subject)
 
-        return visa
+        return self._normalize_visa_type_for_dropdown(visa)
 
 
     def _calculate_last_date(self, request_date_raw, days_to_respond):
@@ -278,6 +433,32 @@ class FieldMapper:
             return "Yes"
 
         return "No"
+
+    # Revenue — an invoice is created the moment an application is lodged
+    # (confirmed live: every real Lodgement entry tested has a matching
+    # Agentcis invoice by application_id, same run). Already-AUD invoices
+    # are written as a plain number; anything else is written as a
+    # GOOGLEFINANCE formula string ("=<amount>*GOOGLEFINANCE(\"CURRENCY:
+    # <code>AUD\")") so Sheets converts it live at the current rate rather
+    # than Python freezing a rate at write time — per explicit direction
+    # to do currency conversion in-sheet, not in the pipeline. No match
+    # found -> blank, same "blank over wrong guess" rule used everywhere
+    # else in this pipeline.
+    def _revenue_cell_value(self, invoice):
+
+        if not invoice:
+            return ""
+
+        amount = invoice.get("invoice_amount", {}).get("actual")
+        currency = (invoice.get("currency_code") or "").strip().upper()
+
+        if not amount or not currency:
+            return ""
+
+        if currency == "AUD":
+            return amount
+
+        return f'={amount}*GOOGLEFINANCE("CURRENCY:{currency}AUD")'
 
     def _workflow_status(self, doc_type, agentcis):
 
@@ -467,7 +648,7 @@ class FieldMapper:
                     consultant_name,
 
                 "Visa Type":
-                    doc.get("main_visa_being_processed"),
+                    self._normalize_visa_type_for_dropdown(doc.get("main_visa_being_processed")),
 
                 "Transaction Reference\nNumber":
                     doc.get("transaction_reference_number"),
@@ -517,7 +698,7 @@ class FieldMapper:
                     consultant_name,
 
                 "Visa Type":
-                    doc.get("visa_program"),
+                    self._normalize_visa_type_for_dropdown(doc.get("visa_program")),
 
                 "Transaction Reference\nNumber":
                     doc.get("transaction_reference_number"),
@@ -575,7 +756,7 @@ class FieldMapper:
                     consultant_name,
 
                 "Visa Type":
-                    doc.get("visa_program"),
+                    self._normalize_visa_type_for_dropdown(doc.get("visa_program")),
 
                 "Transaction Reference\nNumber":
                     doc.get("transaction_reference_number"),
@@ -645,7 +826,7 @@ class FieldMapper:
                     consultant_name,
 
                 "Visa Type":
-                    doc.get("visa_program"),
+                    self._normalize_visa_type_for_dropdown(doc.get("visa_program")),
 
                 "Transaction Reference\nNumber":
                     doc.get("transaction_reference_number"),
@@ -764,7 +945,7 @@ class FieldMapper:
                     consultant_name,
 
                 "Visa Type":
-                    doc.get("visa_program"),
+                    self._normalize_visa_type_for_dropdown(doc.get("visa_program")),
 
                 "Transaction Reference\nNumber":
                     doc.get("transaction_reference_number"),
@@ -852,6 +1033,9 @@ class FieldMapper:
 
                 "Proof of Payment":
                     proof_payment,
+
+                "Revenue":
+                    self._revenue_cell_value(agentcis_data.get("revenue_invoice")),
 
                 "Workflow Updated on Agentcis?":
                     workflow,
@@ -1083,6 +1267,9 @@ class FieldMapper:
 
                 "Proof of Payment":
                     proof_payment,
+
+                "Revenue":
+                    self._revenue_cell_value(agentcis_data.get("revenue_invoice")),
 
                 "Workflow Updated on Agentcis?":
                     self._workflow_status("skills_lodgement", agentcis_data),
@@ -1471,6 +1658,9 @@ class FieldMapper:
 
             "Proof of Payment":
                 proof_payment,
+
+            "Revenue":
+                self._revenue_cell_value(agentcis_data.get("revenue_invoice")),
 
             "Workflow Updated on Agentcis":
                 workflow,

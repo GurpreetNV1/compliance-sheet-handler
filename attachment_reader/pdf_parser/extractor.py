@@ -61,6 +61,19 @@ class IMMIExtractor:
         if "Notification of refusal of application" in self.text:
             return "refusal"
 
+        if "Notification of refusal of a nomination application" in self.text:
+            return "nomination_refusal"
+
+        # Catch-all for any other refusal variant (e.g. sponsorship) that
+        # doesn't match either specific wording above — both confirmed real
+        # samples start their heading with exactly "Notification of refusal
+        # of", so this writes a Refusal row via the same generic
+        # extract_refusal() (fields it can't find just come back blank)
+        # rather than silently dropping the document as "unknown" until a
+        # real sample of that shape turns up.
+        if "Notification of refusal of" in self.text:
+            return "refusal"
+
         if "Referral letter" in self.text and "Client visa details" in self.text:
             return "health_examination"
 
@@ -76,8 +89,11 @@ class IMMIExtractor:
         if "Notice of refund" in self.text:
             return "notification"
 
+        if "Acknowledgement of withdrawal of a nomination application" in self.text:
+            return "nomination_withdrawal"
+
         if "Acknowledgement of withdrawal of" in self.text:
-            return "notification"
+            return "withdrawal"
 
         if "This letter confirms that your application is progressing" in self.text:
             return "notification"
@@ -481,6 +497,19 @@ class IMMIExtractor:
             dob = dob_match.group(1) if dob_match else None
             trn = trn_match.group(1) if trn_match else None
 
+        # The covering letter's own "In reply quote" block states the TRN
+        # too, before the attached decision record - fall back to searching
+        # the whole document if the decision-record section wasn't found or
+        # didn't have it. TRN now also drives the Agentcis Lodgement lookup
+        # for refusals (orchestrator.py), so it's worth not depending on the
+        # decision record's exact layout for this one field.
+        if not trn:
+            trn_fallback = re.search(
+                r"Transaction reference number\s+([A-Z0-9]+)",
+                self.text,
+            )
+            trn = trn_fallback.group(1) if trn_fallback else None
+
         return {
             "document_type": "refusal",
             "primary_applicant": {
@@ -491,6 +520,130 @@ class IMMIExtractor:
             "visa_program": visa,
             "date": date_match.group(1) if date_match else None,
             "transaction_reference_number": trn,
+        }
+
+
+    # Nomination Refusal — different letter/decision-record layout than a
+    # normal visa refusal (no "Application details"/"The applicant's claims"
+    # section), so it gets its own extractor rather than reusing extract_refusal.
+
+    def extract_nomination_refusal(self):
+
+        # No explicit refusal date in the cover letter — the letter's own
+        # issue date (top of document) is the closest real signal, same
+        # fallback extract_refusal() would use if its structured section
+        # were missing.
+        date_match = re.search(
+            r"(\d{1,2}\s+\w+\s+\d{4})",
+            self.text
+        )
+
+        nominee_match = re.search(r"Name of nominee\s+(.+)", self.text)
+        trn_match = re.search(
+            r"Nomination transaction reference number\s+([A-Z0-9]+)",
+            self.text,
+        )
+
+        # The Notice of Decision heading names the program in all caps, e.g.
+        # "TRAINING(NOMINATION) SUBCLASS 407 VISA" — reconstruct it into the
+        # same "<Program> (subclass N)" shape the Visa Type normalizer
+        # expects, then flag it as a nomination so the normalizer picks the
+        # "- Nomination" dropdown variant instead of the plain one.
+        heading_match = re.search(
+            r"([A-Z][A-Z ]+?)\(NOMINATION\)\s*SUBCLASS\s*(\d+)\s*VISA",
+            self.text,
+        )
+
+        visa_program = None
+        if heading_match:
+            program_name = heading_match.group(1).strip().title()
+            visa_program = f"{program_name} (subclass {heading_match.group(2)}) - Nomination"
+
+        return {
+            "document_type": "nomination_refusal",
+            "primary_applicant": {
+                "name": self._clean(nominee_match.group(1)) if nominee_match else None,
+                "dob": None,
+            },
+            "secondary_applicants": [],
+            "visa_program": visa_program,
+            "date": date_match.group(1) if date_match else None,
+            "transaction_reference_number": trn_match.group(1) if trn_match else None,
+        }
+
+
+    # Withdrawal — normal application (not a nomination). The letter states
+    # the actual withdrawal date explicitly, unlike refusal/nomination-refusal.
+
+    def extract_withdrawal(self):
+
+        name_match = re.search(r"Client name\s+(.+)", self.text)
+        dob_match = re.search(
+            r"Date of birth\s+(\d{1,2}\s+\w+\s+\d{4})",
+            self.text,
+        )
+        trn_match = re.search(
+            r"Transaction reference number\s+([A-Z0-9]+)",
+            self.text,
+        )
+        date_match = re.search(
+            r"was withdrawn on\s*(\d{1,2}\s+\w+\s+\d{4})",
+            self.text,
+        )
+        visa_match = re.search(
+            r"Your application for a\s+(.+?)\s+visa was withdrawn",
+            self.text,
+            re.IGNORECASE,
+        )
+
+        return {
+            "document_type": "withdrawal",
+            "primary_applicant": {
+                "name": self._clean(name_match.group(1)) if name_match else None,
+                "dob": dob_match.group(1) if dob_match else None,
+            },
+            "secondary_applicants": [],
+            "visa_program": self._clean(visa_match.group(1)) if visa_match else None,
+            # The withdrawal date can wrap across a line break in the
+            # source PDF (e.g. "27 July\n2026") — clean it the same way
+            # every other multi-word field in this file already is.
+            "date": self._clean(date_match.group(1)) if date_match else None,
+            "transaction_reference_number": trn_match.group(1) if trn_match else None,
+        }
+
+
+    # Nomination Withdrawal — no explicit withdrawal date in the letter body
+    # ("withdrawn as requested"), so the letter's own issue date is used
+    # instead, same fallback pattern as extract_nomination_refusal.
+
+    def extract_nomination_withdrawal(self):
+
+        date_match = re.search(
+            r"(\d{1,2}\s+\w+\s+\d{4})",
+            self.text
+        )
+
+        nominee_match = re.search(r"Name of nominee\s+(.+)", self.text)
+        trn_match = re.search(
+            r"Nomination transaction reference number\s+([A-Z0-9]+)",
+            self.text,
+        )
+        visa_match = re.search(r"Visa program\s+(.+)", self.text)
+
+        visa_program = self._clean(visa_match.group(1)) if visa_match else None
+        if visa_program:
+            visa_program = f"{visa_program} - Nomination"
+
+        return {
+            "document_type": "nomination_withdrawal",
+            "primary_applicant": {
+                "name": self._clean(nominee_match.group(1)) if nominee_match else None,
+                "dob": None,
+            },
+            "secondary_applicants": [],
+            "visa_program": visa_program,
+            "date": date_match.group(1) if date_match else None,
+            "transaction_reference_number": trn_match.group(1) if trn_match else None,
         }
 
 
@@ -845,21 +998,21 @@ class IMMIExtractor:
             "appointment_place": self._clean(appt_place.group(1)) if appt_place else None,
         }
 
-    # Generic Notification bucket — refund / withdrawal / assessment-commence /
+    # Generic Notification bucket — refund / assessment-commence /
     # citizenship-approval / general. One flexible extractor rather than a
     # dedicated one per subtype, since the target sheet tabs (Notifications,
     # Partner Visa Notifications, Assessment Commence Notification, S128
     # Notification of Decisions) all just want: TRN + client name + freeform text.
     # This trigger list is expected to grow as new phrasing is encountered —
     # same evolving-keyword-list style as the rest of this file.
+    # (Withdrawal used to be bucketed here too, but it's now its own top-level
+    # doc_type — see detect_document_type — so it can land in Outcomes with a
+    # proper "Withdrawn" Outcome value instead of a freeform Notifications row.)
 
     def _detect_notification_subtype(self):
 
         if "Notice of refund" in self.text:
             return "refund"
-
-        if "Acknowledgement of withdrawal of" in self.text:
-            return "withdrawal"
 
         if "This letter confirms that your application is progressing" in self.text:
             return "assessment_commence"
@@ -1167,7 +1320,16 @@ class IMMIExtractor:
         
         if doc_type == "refusal":
             return self.extract_refusal()
-        
+
+        if doc_type == "nomination_refusal":
+            return self.extract_nomination_refusal()
+
+        if doc_type == "withdrawal":
+            return self.extract_withdrawal()
+
+        if doc_type == "nomination_withdrawal":
+            return self.extract_nomination_withdrawal()
+
         if doc_type == "nomination_acknowledgement":
             return self.extract_nomination_acknowledgement()
         

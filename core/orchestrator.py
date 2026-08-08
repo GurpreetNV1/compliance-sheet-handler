@@ -10,7 +10,8 @@ from core.routing import MAILBOX_ROUTES, resolve_write_target
 from sheets.sheets_client import write_to_sheet
 from sheets.art_lookup import find_client_by_case_number
 from sheets.skills_lookup import find_client_by_partner_application_id
-from agentcis.agentcis_handler import AgentcisSession
+from sheets.visa_lookup import find_client_by_trn
+from agentcis.agentcis_handler import AgentcisSession, find_invoice_for_application
 
 
 # Generic departmental/institutional inboxes (education providers, RTOs,
@@ -304,6 +305,30 @@ class Orchestrator:
             entry_payloads[0]
         )
 
+        # Step 3b — Revenue. An invoice is created the moment an
+        # application is lodged, so this only fires for lodgement-type
+        # entries — confirmed live that a real Lodgement's Client ID +
+        # Agentcis Application ID reliably finds its matching invoice via
+        # application_id. Attached onto agentcis_data (rather than passed
+        # separately) so every downstream field_mapper branch already
+        # receiving agentcis_data picks it up with no signature changes.
+        lodgement_doc_types = {"acknowledgement", "skills_lodgement", "art_lodgement_stage1"}
+        is_lodgement = any(
+            (p["document"].get("document_type") or "") in lodgement_doc_types
+            for p in entry_payloads
+        )
+        if is_lodgement and agentcis_data.get("internalId"):
+            try:
+                invoices = self.agentcis.fetch_invoices(agentcis_data["internalId"])
+                invoice = find_invoice_for_application(invoices, agentcis_data.get("applicationId"))
+                if invoice:
+                    agentcis_data["revenue_invoice"] = invoice
+                    print(f"Revenue matched: invoice {invoice['id']} — {invoice['invoice_amount']['formatted']}")
+                else:
+                    print(f"No invoice found for application {agentcis_data.get('applicationId')!r}")
+            except Exception as e:
+                print(f"Revenue lookup failed: {e}")
+
         # Step 4 — Write each entry
         for payload in entry_payloads:
 
@@ -368,6 +393,17 @@ class Orchestrator:
         # threading more special cases through the IMMI/ART flow below.
         if doc_type.startswith("skills_"):
             return self._fetch_agentcis_data_skills(email_meta, doc)
+
+        # Refusal and withdrawal letters are sent to visa@/study@ only,
+        # never cc'ing the client — there's no client email to search
+        # Agentcis with, and the applicant's name alone risks ambiguity
+        # (same reasoning as Skills Assessment above). The Transaction
+        # Reference Number is stable across the case's whole lifecycle, so
+        # this looks up the original Lodgement row instead of guessing —
+        # same pattern as _fetch_agentcis_data_skills's Partner Application
+        # ID lookup.
+        if doc_type in ("refusal", "nomination_refusal", "withdrawal", "nomination_withdrawal"):
+            return self._fetch_agentcis_data_visa_by_trn(doc)
 
         visa_name = self._resolve_visa_name(doc, email_meta)
 
@@ -526,4 +562,42 @@ class Orchestrator:
                 return partner_data
 
         print("No Agentcis match found for Skills Assessment doc — will write row with blank Agentcis fields")
+        return {}
+
+    # Refusal / Withdrawal (and their nomination variants) — no client email
+    # to search (always sent to visa@/study@ only, then forwarded to the
+    # handling consultant internally), so this skips recipient/name search
+    # entirely, same as _fetch_agentcis_data_skills. If the original
+    # Lodgement row can't be found (the lodgement may have happened years
+    # earlier and no longer be in the sheet's history), this returns {} —
+    # the row still gets written with whatever the letter itself provided
+    # (name, TRN, visa type, date, Outcome), just with blank Agentcis fields
+    # for staff to fill in by hand.
+    def _fetch_agentcis_data_visa_by_trn(self, doc):
+
+        trn = doc.get("transaction_reference_number")
+
+        if trn:
+            try:
+                trn_data = find_client_by_trn(trn)
+            except Exception as e:
+                print(f"TRN lookup failed for {trn}: {e}")
+                trn_data = None
+
+            if trn_data and trn_data.get("internalId"):
+                try:
+                    print(f"Found Client ID {trn_data['internalId']} via Lodgement record — fetching directly")
+                    live_data = self.agentcis.fetch_by_client_id(trn_data["internalId"], "")
+                    if live_data:
+                        print("Agentcis matched via direct Client ID lookup")
+                        return live_data
+                except Exception as e:
+                    print(f"Direct Client ID fetch failed for {trn_data['internalId']}: {e}")
+
+            if trn_data:
+                print(f"Matched via existing Transaction Reference Number {trn} record: {trn_data}")
+                trn_data["_resolved_via_case_lookup"] = True
+                return trn_data
+
+        print("No Lodgement record found for this Transaction Reference Number — will write row with blank Agentcis fields")
         return {}

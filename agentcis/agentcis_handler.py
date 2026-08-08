@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from dotenv import load_dotenv
@@ -52,6 +53,19 @@ def extract_subclass(text):
 
 def similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
+
+
+def find_invoice_for_application(invoices, application_id):
+    if not application_id:
+        return None
+
+    application_id = str(application_id).strip()
+
+    for invoice in invoices:
+        if str(invoice.get("application_id")).strip() == application_id:
+            return invoice
+
+    return None
 
 class AgentcisSession:
 
@@ -702,6 +716,42 @@ class AgentcisSession:
         }
 
         return final_data
+
+    # ---------------- INVOICES / REVENUE ---------------- #
+    #
+    # This endpoint (/api/v2/clients/{id}/invoices) isn't part of Agentcis's
+    # documented, token-authenticated API — calling it directly with the API
+    # key returns 401 "session_expired" (confirmed live). It only accepts a
+    # real logged-in browser session, so it's called from inside the page
+    # itself (page.evaluate + fetch with credentials:"include"), reusing
+    # this same authenticated Playwright session rather than a raw HTTP
+    # request. Each invoice in the response already carries its own
+    # application_id — no need to open individual invoices to find out
+    # which application they belong to.
+    def fetch_invoices(self, client_id, per_page=100):
+        page = self.page
+
+        result = page.evaluate(f"""
+            async () => {{
+                const res = await fetch(
+                    "https://acmemigration.agentcisapp.com/api/v2/clients/{client_id}/invoices?per_page={per_page}&page=1",
+                    {{ headers: {{ "Accept": "application/json" }}, credentials: "include" }}
+                );
+                return {{ status: res.status, body: await res.text() }};
+            }}
+        """)
+
+        if result["status"] != 200:
+            print(f"Failed to fetch invoices for client {client_id}: HTTP {result['status']}")
+            return []
+
+        try:
+            data = json.loads(result["body"])
+        except json.JSONDecodeError as e:
+            print(f"Invoice response for client {client_id} was not valid JSON: {e}")
+            return []
+
+        return data.get("data", [])
 
     # ---------------- CLOSE ---------------- #
 
